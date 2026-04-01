@@ -33,19 +33,22 @@ st.markdown("""
 
 # Initialize Connection
 try:
-    # Note: st-gsheets-connection is the package name in requirements.txt
-    # but it is imported/used as GSheetsConnection via streamlit_gsheets
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
     st.error("Connection Error: Please check your 'Advanced Settings' Secrets.")
     st.stop()
 
 def load_data(worksheet_name):
-    """Fetch data from a specific worksheet."""
+    """Fetch data from a specific worksheet with fallback diagnostics."""
     try:
-        return conn.read(worksheet=worksheet_name, ttl="1m")
+        # Standardize loading
+        df = conn.read(worksheet=worksheet_name, ttl="1m")
+        if df is not None:
+            df.columns = [c.strip() for c in df.columns]
+        return df
     except Exception as e:
         st.error(f"Error reading worksheet '{worksheet_name}': {e}")
+        st.info("💡 Tip: Check if the tab name in your Google Sheet exactly matches '" + worksheet_name + "'.")
         return pd.DataFrame()
 
 # Title
@@ -61,10 +64,10 @@ with tab1:
     market_df = load_data("MarketData")
     
     if not market_df.empty:
-        market_df.columns = [c.strip() for c in market_df.columns]
-        
         # Check for TSX Composite
-        tsx_composite = market_df[market_df['Ticker'].str.contains('OSPTX', na=False, case=False)]
+        # Using a more flexible check in case Ticker column has extra text
+        tsx_composite = market_df[market_df['Ticker'].astype(str).str.contains('OSPTX', na=False, case=False)]
+        
         if not tsx_composite.empty:
             cols = st.columns(3)
             with cols[0]:
@@ -75,15 +78,20 @@ with tab1:
         st.divider()
         st.subheader("TSX Sectors")
         
-        sectors = market_df[~market_df['Ticker'].str.contains('OSPTX', na=False, case=False)]
-        cols = st.columns(3)
-        for i, (index, row) in enumerate(sectors.iterrows()):
-            with cols[i % 3]:
-                st.metric(row['Index Name'], 
-                          f"{row['Price']:,.2f}", 
-                          f"{row['Pct_Change']}%")
+        # Filter out the composite to show only sectors
+        sectors = market_df[~market_df['Ticker'].astype(str).str.contains('OSPTX', na=False, case=False)]
+        
+        if not sectors.empty:
+            cols = st.columns(3)
+            for i, (index, row) in enumerate(sectors.iterrows()):
+                with cols[i % 3]:
+                    st.metric(row['Index Name'], 
+                              f"{row['Price']:,.2f}", 
+                              f"{row['Pct_Change']}%")
+        else:
+            st.info("No sector data rows found in 'MarketData'.")
     else:
-        st.warning("Data not found. Ensure 'MarketData' sheet is shared and has content.")
+        st.warning("Data not found. Please verify that your Google Sheet has a tab named 'MarketData'.")
 
 with tab2:
     st.header("Personal Stock Tracker")
@@ -91,10 +99,15 @@ with tab2:
     portfolio_df = load_data("Portfolio")
     
     if not portfolio_df.empty:
-        portfolio_df.columns = [c.strip() for c in portfolio_df.columns]
-        
         required_cols = ['Cost Basis', 'Market Value', 'Sector']
-        if all(col in portfolio_df.columns for col in required_cols):
+        # Check if required columns exist (case insensitive)
+        actual_cols = [c.lower() for c in portfolio_df.columns]
+        missing = [col for col in required_cols if col.lower() not in actual_cols]
+        
+        if not missing:
+            # Map column names to ensure consistency
+            col_map = {c: c for c in portfolio_df.columns if c.lower() in [rc.lower() for rc in required_cols]}
+            
             total_inv = portfolio_df['Cost Basis'].sum()
             current_val = portfolio_df['Market Value'].sum()
             total_pnl = current_val - total_inv
@@ -119,7 +132,8 @@ with tab2:
                 st.subheader("Holdings Detail")
                 st.dataframe(portfolio_df, use_container_width=True)
         else:
-            st.error(f"Missing columns. Need: {required_cols}. Found: {list(portfolio_df.columns)}")
+            st.error(f"Missing columns in Portfolio sheet: {missing}")
+            st.write("Found columns:", list(portfolio_df.columns))
     else:
         st.warning("Portfolio worksheet is empty or not found.")
 
