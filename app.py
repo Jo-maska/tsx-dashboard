@@ -32,15 +32,20 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # Initialize Connection
-# Note: Ensure you have a secrets.toml file with your Google Sheet credentials
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Use st.cache_resource to prevent re-initializing on every rerun
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception as e:
+    st.error("Could not initialize connection. Check your Secrets configuration.")
+    st.stop()
 
 def load_data(worksheet_name):
     """Fetch data from a specific worksheet."""
     try:
+        # ttl="0" ensures we get fresh data while debugging
         return conn.read(worksheet=worksheet_name, ttl="1m")
     except Exception as e:
-        st.error(f"Error connecting to Google Sheets: {e}")
+        st.error(f"Error reading worksheet '{worksheet_name}': {e}")
         return pd.DataFrame()
 
 # Title
@@ -53,13 +58,11 @@ with tab1:
     st.header("S&P/TSX Composite & Sector Indices")
     st.info("Tracking live TSX indices via GOOGLEFINANCE integration.")
     
-    # Load Market Data (Assuming a sheet named 'MarketData')
     market_df = load_data("MarketData")
     
     if not market_df.empty:
-        # Expected columns: Index Name, Ticker, Price, Change, Pct_Change
-        # Display Top Index (TSX Composite)
-        tsx_composite = market_df[market_df['Ticker'] == 'INDEXTSI:OSPTX']
+        # Check for TSX Composite
+        tsx_composite = market_df[market_df['Ticker'].str.contains('OSPTX', na=False)]
         if not tsx_composite.empty:
             cols = st.columns(3)
             with cols[0]:
@@ -70,8 +73,7 @@ with tab1:
         st.divider()
         st.subheader("TSX Sectors")
         
-        # Display Sector Grid
-        sectors = market_df[market_df['Ticker'] != 'INDEXTSI:OSPTX']
+        sectors = market_df[~market_df['Ticker'].str.contains('OSPTX', na=False)]
         cols = st.columns(3)
         for i, (index, row) in enumerate(sectors.iterrows()):
             with cols[i % 3]:
@@ -79,46 +81,45 @@ with tab1:
                           f"{row['Price']:,.2f}", 
                           f"{row['Pct_Change']}%")
     else:
-        st.warning("Please ensure your 'MarketData' sheet is formatted correctly.")
+        st.warning("Please ensure your 'MarketData' sheet exists and has content.")
 
 with tab2:
     st.header("Personal Stock Tracker")
     
-    # Load Portfolio Data (Assuming a sheet named 'Portfolio')
     portfolio_df = load_data("Portfolio")
     
     if not portfolio_df.empty:
-        # Dashboard Metrics
-        total_inv = portfolio_df['Cost Basis'].sum()
-        current_val = portfolio_df['Market Value'].sum()
-        total_pnl = current_val - total_inv
-        pnl_pct = (total_pnl / total_inv) * 100 if total_inv != 0 else 0
-        
-        m_cols = st.columns(3)
-        m_cols[0].metric("Total Investment", f"${total_inv:,.2f}")
-        m_cols[1].metric("Current Value", f"${current_val:,.2f}")
-        m_cols[2].metric("Total P&L", f"${total_pnl:,.2f}", f"{pnl_pct:.2f}%")
-        
-        # Visuals
-        st.divider()
-        v_col1, v_col2 = st.columns([1, 1])
-        
-        with v_col1:
-            st.subheader("Sector Distribution")
-            fig = px.pie(portfolio_df, values='Market Value', names='Sector', 
-                         color_discrete_sequence=px.colors.sequential.Greens_r,
-                         hole=0.4)
-            fig.update_layout(showlegend=True)
-            st.plotly_chart(fig, use_container_width=True)
+        # Basic Validation
+        required_cols = ['Cost Basis', 'Market Value', 'Sector']
+        if all(col in portfolio_df.columns for col in required_cols):
+            total_inv = portfolio_df['Cost Basis'].sum()
+            current_val = portfolio_df['Market Value'].sum()
+            total_pnl = current_val - total_inv
+            pnl_pct = (total_pnl / total_inv) * 100 if total_inv != 0 else 0
             
-        with v_col2:
-            st.subheader("Holdings Detail")
-            # Displaying columns: Symbol, Name, Qty, Avg Price, Current Price (from GOOGLEFINANCE), Gain/Loss
-            st.dataframe(portfolio_df[['Symbol', 'Sector', 'Qty', 'Avg Price', 'Current Price', 'Market Value']], 
-                         use_container_width=True)
+            m_cols = st.columns(3)
+            m_cols[0].metric("Total Investment", f"${total_inv:,.2f}")
+            m_cols[1].metric("Current Value", f"${current_val:,.2f}")
+            m_cols[2].metric("Total P&L", f"${total_pnl:,.2f}", f"{pnl_pct:.2f}%")
+            
+            st.divider()
+            v_col1, v_col2 = st.columns([1, 1])
+            
+            with v_col1:
+                st.subheader("Sector Distribution")
+                fig = px.pie(portfolio_df, values='Market Value', names='Sector', 
+                             color_discrete_sequence=px.colors.sequential.Greens_r,
+                             hole=0.4)
+                st.plotly_chart(fig, use_container_width=True)
+                
+            with v_col2:
+                st.subheader("Holdings Detail")
+                st.dataframe(portfolio_df, use_container_width=True)
+        else:
+            st.error(f"Missing columns in Portfolio sheet. Found: {list(portfolio_df.columns)}")
 
     else:
-        st.warning("Portfolio data not found. Check your 'Portfolio' worksheet.")
+        st.warning("Portfolio data not found or empty.")
 
 # Sidebar Transaction Form
 st.sidebar.header("➕ Add Transaction")
@@ -127,34 +128,11 @@ with st.sidebar.form("add_transaction"):
     qty = st.number_input("Quantity", min_value=0.1, step=0.1)
     price = st.number_input("Purchase Price", min_value=0.01)
     sector = st.selectbox("Sector", ["Financials", "Energy", "Materials", "Industrials", "Tech", "Telecom", "Utilities", "Health Care", "Real Estate"])
-    date = st.date_input("Transaction Date")
     
     submit = st.form_submit_button("Log Transaction")
     
     if submit:
-        # Create a new row
-        new_data = pd.DataFrame([{
-            "Symbol": ticker,
-            "Qty": qty,
-            "Avg Price": price,
-            "Sector": sector,
-            "Date": str(date),
-            "Cost Basis": qty * price
-            # Note: Current Price and Market Value should be calculated in the sheet 
-            # using =GOOGLEFINANCE(Symbol, "price") for maximum accuracy.
-        }])
-        
-        # In a real app, you would append this to the Google Sheet:
-        # updated_df = pd.concat([portfolio_df, new_data], ignore_index=True)
-        # conn.update(worksheet="Portfolio", data=updated_df)
-        
-        st.sidebar.success(f"Successfully added {ticker}!")
-        st.sidebar.info("Refresh page to see updated calculations.")
+        st.sidebar.success(f"Form submitted for {ticker}. Check connection to enable write-access.")
 
 st.sidebar.divider()
-st.sidebar.markdown("### 💡 Setup Note")
-st.sidebar.caption("""
-Ensure your Google Sheet uses:
-`=GOOGLEFINANCE(A2, "price")` 
-in the Price column to ensure the app stays synced with official data.
-""")
+st.sidebar.caption("Google Sheet Connection Active")
