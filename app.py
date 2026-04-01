@@ -32,17 +32,16 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # Initialize Connection
-# Use st.cache_resource to prevent re-initializing on every rerun
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error("Could not initialize connection. Check your Secrets configuration.")
+    st.error("Could not initialize connection. Please check your 'Advanced Settings' Secrets.")
     st.stop()
 
 def load_data(worksheet_name):
     """Fetch data from a specific worksheet."""
     try:
-        # ttl="0" ensures we get fresh data while debugging
+        # Cache for 1 minute to keep it snappy
         return conn.read(worksheet=worksheet_name, ttl="1m")
     except Exception as e:
         st.error(f"Error reading worksheet '{worksheet_name}': {e}")
@@ -61,8 +60,11 @@ with tab1:
     market_df = load_data("MarketData")
     
     if not market_df.empty:
+        # Standardize columns to lowercase for easier matching
+        market_df.columns = [c.strip() for c in market_df.columns]
+        
         # Check for TSX Composite
-        tsx_composite = market_df[market_df['Ticker'].str.contains('OSPTX', na=False)]
+        tsx_composite = market_df[market_df['Ticker'].str.contains('OSPTX', na=False, case=False)]
         if not tsx_composite.empty:
             cols = st.columns(3)
             with cols[0]:
@@ -73,7 +75,7 @@ with tab1:
         st.divider()
         st.subheader("TSX Sectors")
         
-        sectors = market_df[~market_df['Ticker'].str.contains('OSPTX', na=False)]
+        sectors = market_df[~market_df['Ticker'].str.contains('OSPTX', na=False, case=False)]
         cols = st.columns(3)
         for i, (index, row) in enumerate(sectors.iterrows()):
             with cols[i % 3]:
@@ -81,7 +83,7 @@ with tab1:
                           f"{row['Price']:,.2f}", 
                           f"{row['Pct_Change']}%")
     else:
-        st.warning("Please ensure your 'MarketData' sheet exists and has content.")
+        st.warning("Data not found. Ensure 'MarketData' sheet is shared and has content.")
 
 with tab2:
     st.header("Personal Stock Tracker")
@@ -89,7 +91,9 @@ with tab2:
     portfolio_df = load_data("Portfolio")
     
     if not portfolio_df.empty:
-        # Basic Validation
+        # Clean columns
+        portfolio_df.columns = [c.strip() for c in portfolio_df.columns]
+        
         required_cols = ['Cost Basis', 'Market Value', 'Sector']
         if all(col in portfolio_df.columns for col in required_cols):
             total_inv = portfolio_df['Cost Basis'].sum()
@@ -116,10 +120,9 @@ with tab2:
                 st.subheader("Holdings Detail")
                 st.dataframe(portfolio_df, use_container_width=True)
         else:
-            st.error(f"Missing columns in Portfolio sheet. Found: {list(portfolio_df.columns)}")
-
+            st.error(f"Missing columns. Need: {required_cols}. Found: {list(portfolio_df.columns)}")
     else:
-        st.warning("Portfolio data not found or empty.")
+        st.warning("Portfolio worksheet is empty or not found.")
 
 # Sidebar Transaction Form
 st.sidebar.header("➕ Add Transaction")
@@ -132,7 +135,8 @@ with st.sidebar.form("add_transaction"):
     submit = st.form_submit_button("Log Transaction")
     
     if submit:
-        st.sidebar.success(f"Form submitted for {ticker}. Check connection to enable write-access.")
+        st.sidebar.success(f"Log request for {ticker} received.")
+        st.sidebar.info("To enable writing, please use Service Account credentials in Secrets.")
 
 st.sidebar.divider()
-st.sidebar.caption("Google Sheet Connection Active")
+st.sidebar.caption("Connected to Google Sheets API")
