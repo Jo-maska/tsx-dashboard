@@ -33,15 +33,16 @@ st.markdown("""
 
 # Initialize Connection
 try:
+    # Note: st-gsheets-connection is the package name in requirements.txt
+    # but it is imported/used as GSheetsConnection via streamlit_gsheets
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
-    st.error("Could not initialize connection. Please check your 'Advanced Settings' Secrets.")
+    st.error("Connection Error: Please check your 'Advanced Settings' Secrets.")
     st.stop()
 
 def load_data(worksheet_name):
     """Fetch data from a specific worksheet."""
     try:
-        # Cache for 1 minute to keep it snappy
         return conn.read(worksheet=worksheet_name, ttl="1m")
     except Exception as e:
         st.error(f"Error reading worksheet '{worksheet_name}': {e}")
@@ -60,7 +61,6 @@ with tab1:
     market_df = load_data("MarketData")
     
     if not market_df.empty:
-        # Standardize columns to lowercase for easier matching
         market_df.columns = [c.strip() for c in market_df.columns]
         
         # Check for TSX Composite
@@ -91,7 +91,6 @@ with tab2:
     portfolio_df = load_data("Portfolio")
     
     if not portfolio_df.empty:
-        # Clean columns
         portfolio_df.columns = [c.strip() for c in portfolio_df.columns]
         
         required_cols = ['Cost Basis', 'Market Value', 'Sector']
