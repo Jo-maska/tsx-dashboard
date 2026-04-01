@@ -44,12 +44,16 @@ def load_data(worksheet_name):
         # Standardize loading
         df = conn.read(worksheet=worksheet_name, ttl="1m")
         if df is not None:
-            df.columns = [c.strip() for c in df.columns]
+            # Clean column names: remove extra spaces and standardize
+            df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
         st.error(f"Error reading worksheet '{worksheet_name}': {e}")
-        st.info("💡 Tip: Check if the tab name in your Google Sheet exactly matches '" + worksheet_name + "'.")
         return pd.DataFrame()
+
+# Sidebar Debugging & Info
+st.sidebar.header("⚙️ Settings")
+debug_mode = st.sidebar.checkbox("Show Debug Info", value=False)
 
 # Title
 st.title("🌲 TSX Wealth Tracker")
@@ -63,53 +67,64 @@ with tab1:
     
     market_df = load_data("MarketData")
     
+    if debug_mode and not market_df.empty:
+        st.write("Debug: MarketData Columns found:", list(market_df.columns))
+        st.write(market_df.head())
+
     if not market_df.empty:
-        # Check for TSX Composite
-        # Using a more flexible check in case Ticker column has extra text
-        tsx_composite = market_df[market_df['Ticker'].astype(str).str.contains('OSPTX', na=False, case=False)]
-        
-        if not tsx_composite.empty:
-            cols = st.columns(3)
-            with cols[0]:
-                st.metric("TSX Composite", 
-                          f"{tsx_composite.iloc[0]['Price']:,.2f}", 
-                          f"{tsx_composite.iloc[0]['Pct_Change']}%")
-        
-        st.divider()
-        st.subheader("TSX Sectors")
-        
-        # Filter out the composite to show only sectors
-        sectors = market_df[~market_df['Ticker'].astype(str).str.contains('OSPTX', na=False, case=False)]
-        
-        if not sectors.empty:
-            cols = st.columns(3)
-            for i, (index, row) in enumerate(sectors.iterrows()):
-                with cols[i % 3]:
-                    st.metric(row['Index Name'], 
-                              f"{row['Price']:,.2f}", 
-                              f"{row['Pct_Change']}%")
+        # We search for columns that contain 'Ticker' or 'Price' or 'Pct'
+        ticker_col = next((c for c in market_df.columns if 'ticker' in c.lower()), None)
+        price_col = next((c for c in market_df.columns if 'price' in c.lower()), None)
+        change_col = next((c for c in market_df.columns if 'pct' in c.lower() or 'change' in c.lower()), None)
+        name_col = next((c for c in market_df.columns if 'name' in c.lower()), None)
+
+        if ticker_col and price_col:
+            # Check for TSX Composite (OSPTX)
+            tsx_composite = market_df[market_df[ticker_col].astype(str).str.contains('OSPTX', na=False, case=False)]
+            
+            if not tsx_composite.empty:
+                cols = st.columns(3)
+                with cols[0]:
+                    val = tsx_composite.iloc[0][price_col]
+                    delta = tsx_composite.iloc[0][change_col] if change_col else None
+                    st.metric("TSX Composite", f"{val:,.2f}", f"{delta}%" if delta else None)
+            
+            st.divider()
+            st.subheader("TSX Sectors")
+            
+            # Filter out the composite
+            sectors = market_df[~market_df[ticker_col].astype(str).str.contains('OSPTX', na=False, case=False)]
+            
+            if not sectors.empty:
+                display_cols = st.columns(3)
+                for i, (index, row) in enumerate(sectors.iterrows()):
+                    with display_cols[i % 3]:
+                        label = row[name_col] if name_col else row[ticker_col]
+                        val = row[price_col]
+                        delta = row[change_col] if change_col else None
+                        st.metric(label, f"{val:,.2f}", f"{delta}%" if delta else None)
         else:
-            st.info("No sector data rows found in 'MarketData'.")
+            st.error(f"Could not find required columns. I found: {list(market_df.columns)}. Please ensure columns are named 'Ticker' and 'Price'.")
     else:
-        st.warning("Data not found. Please verify that your Google Sheet has a tab named 'MarketData'.")
+        st.warning("Data not found. Verify your Google Sheet has a tab named 'MarketData' and check the 'Show Debug Info' checkbox in the sidebar for more details.")
 
 with tab2:
     st.header("Personal Stock Tracker")
     
     portfolio_df = load_data("Portfolio")
     
+    if debug_mode and not portfolio_df.empty:
+        st.write("Debug: Portfolio Columns found:", list(portfolio_df.columns))
+
     if not portfolio_df.empty:
-        required_cols = ['Cost Basis', 'Market Value', 'Sector']
-        # Check if required columns exist (case insensitive)
-        actual_cols = [c.lower() for c in portfolio_df.columns]
-        missing = [col for col in required_cols if col.lower() not in actual_cols]
+        # Standardizing for Portfolio
+        cost_col = next((c for c in portfolio_df.columns if 'cost' in c.lower()), None)
+        mkt_col = next((c for c in portfolio_df.columns if 'market' in c.lower()), None)
+        sec_col = next((c for c in portfolio_df.columns if 'sector' in c.lower()), None)
         
-        if not missing:
-            # Map column names to ensure consistency
-            col_map = {c: c for c in portfolio_df.columns if c.lower() in [rc.lower() for rc in required_cols]}
-            
-            total_inv = portfolio_df['Cost Basis'].sum()
-            current_val = portfolio_df['Market Value'].sum()
+        if cost_col and mkt_col and sec_col:
+            total_inv = portfolio_df[cost_col].sum()
+            current_val = portfolio_df[mkt_col].sum()
             total_pnl = current_val - total_inv
             pnl_pct = (total_pnl / total_inv) * 100 if total_inv != 0 else 0
             
@@ -123,7 +138,7 @@ with tab2:
             
             with v_col1:
                 st.subheader("Sector Distribution")
-                fig = px.pie(portfolio_df, values='Market Value', names='Sector', 
+                fig = px.pie(portfolio_df, values=mkt_col, names=sec_col, 
                              color_discrete_sequence=px.colors.sequential.Greens_r,
                              hole=0.4)
                 st.plotly_chart(fig, use_container_width=True)
@@ -132,8 +147,7 @@ with tab2:
                 st.subheader("Holdings Detail")
                 st.dataframe(portfolio_df, use_container_width=True)
         else:
-            st.error(f"Missing columns in Portfolio sheet: {missing}")
-            st.write("Found columns:", list(portfolio_df.columns))
+            st.error("Missing required columns in Portfolio sheet (Cost Basis, Market Value, or Sector).")
     else:
         st.warning("Portfolio worksheet is empty or not found.")
 
@@ -149,7 +163,7 @@ with st.sidebar.form("add_transaction"):
     
     if submit:
         st.sidebar.success(f"Log request for {ticker} received.")
-        st.sidebar.info("To enable writing, please use Service Account credentials in Secrets.")
+        st.sidebar.info("Writing requires Service Account JSON in Secrets.")
 
 st.sidebar.divider()
 st.sidebar.caption("Connected to Google Sheets API")
